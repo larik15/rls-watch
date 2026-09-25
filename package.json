@@ -1,0 +1,19 @@
+{
+  "name": "rls-watch",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hosted monitor for the security of many Supabase projects: reuses supabase-security-mcp's checks on a schedule and alerts on Telegram when something opens up.",
+  "type": "module",
+  "scripts": {
+    "worker": "node worker/index.mjs",
+    "worker:once": "node worker/index.mjs --once",
+    "test": "node --test worker/test/*.test.mjs"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "pg": "^8.23.0",
+    "supabase-security-mcp": "^0.1.0"
+  },
+  "license": "MIT"
+}
