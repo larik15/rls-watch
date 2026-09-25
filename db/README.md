@@ -13,6 +13,13 @@ SQL migrations for the RLS Watch Supabase project itself.
    `002_test_policies.sql`, which lists what each of them should and should not be
    able to see/do. It's comments, not a runnable script — follow it manually with
    each user's JWT (or `set role` in the SQL editor).
+5. Paste and run `003_grants.sql`. This project was created with **Automatically
+   expose new tables** turned off, so RLS alone isn't enough — `authenticated` and
+   `service_role` have no privileges on a table until they're granted explicitly.
+   Without this file every query, from the browser or the worker, fails with a
+   permission-denied error even though the policies in `001_init.sql` are correct.
+   The `alter default privileges` statements at the end make this automatic for any
+   table added by a later migration, run the same way (SQL editor, as `postgres`).
 
 Run each file once. The migrations aren't idempotent: running `001_init.sql` a second time
 fails on `create table`.
