@@ -1,0 +1,10 @@
+# Meant to be joined into the existing caddy/n8n compose on the server (see README
+# for the Caddy snippet that serves web/dist). Standalone, it just runs the worker.
+services:
+  rls-watch-worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    env_file:
+      - .env
+    restart: unless-stopped
