@@ -1,0 +1,95 @@
+-- RLS Watch — policy test expectations
+--
+-- This file documents, as comments, what two test users should and should not be able
+-- to see/do after 001_init.sql is applied. It is not meant to be run automatically —
+-- follow it manually in the Supabase SQL editor (as the two users, via `set role` /
+-- the API with each user's JWT) or turn it into a script later if useful.
+--
+-- Setup (run once, as service_role or via the dashboard):
+--   1. Create two auth users: alice@example.com ("Alice") and bob@example.com ("Bob").
+--   2. As Alice: insert into agencies (name, owner_id) values ('Alice Agency', <alice_uid>).
+--      The agencies_add_owner_member trigger adds Alice to members as 'owner'.
+--   3. As Alice: insert into members (agency_id, user_id, role)
+--      values (<alice_agency_id>, <bob_uid>, 'member'). Now Bob is a member (not owner).
+--   4. As Bob: insert into agencies (name, owner_id) values ('Bob Agency', <bob_uid>).
+--      Bob is now owner of a second, separate agency Alice has no access to.
+--   5. As Alice: insert a project into Alice Agency, e.g.
+--      insert into projects (agency_id, name, supabase_url, anon_key)
+--      values (<alice_agency_id>, 'demo', 'https://x.supabase.co', 'anon-key').
+
+-- ---------------------------------------------------------------------------
+-- agencies
+-- ---------------------------------------------------------------------------
+-- Alice (owner of Alice Agency, member of nothing else):
+--   select * from agencies              -> only "Alice Agency"
+--   update agencies set name = 'x' where id = <alice_agency_id>  -> succeeds
+--   update agencies set name = 'x' where id = <bob_agency_id>    -> 0 rows (not visible)
+--   delete from agencies where id = <alice_agency_id>            -> succeeds
+--
+-- Bob (member of Alice Agency, owner of Bob Agency):
+--   select * from agencies              -> both "Alice Agency" and "Bob Agency"
+--   update agencies set name = 'x' where id = <alice_agency_id>  -> 0 rows (member, not owner)
+--   delete from agencies where id = <alice_agency_id>            -> 0 rows (member, not owner)
+--   update agencies set name = 'x' where id = <bob_agency_id>    -> succeeds (owner)
+
+-- ---------------------------------------------------------------------------
+-- members
+-- ---------------------------------------------------------------------------
+-- Alice: select * from members where agency_id = <alice_agency_id> -> sees Alice (owner) + Bob (member)
+-- Bob:   select * from members where agency_id = <alice_agency_id> -> same rows (he's a member)
+-- Bob:   insert into members (agency_id, user_id, role)
+--          values (<alice_agency_id>, <carol_uid>, 'member')       -> 0 rows / rejected (not owner)
+-- Bob:   update members set role = 'owner' where agency_id = <alice_agency_id> and user_id = <bob_uid>
+--                                                                   -> rejected (with check requires role='member')
+-- Alice: delete from members where agency_id = <alice_agency_id> and user_id = <alice_uid>
+--                                                                   -> 0 rows (owner row not targeted by
+--                                                                      members_delete's `role = 'member'` check)
+-- Alice: delete from members where agency_id = <alice_agency_id> and user_id = <bob_uid>
+--                                                                   -> succeeds (owner removing a member)
+
+-- ---------------------------------------------------------------------------
+-- projects
+-- ---------------------------------------------------------------------------
+-- Bob (member, not owner): update projects set name = 'renamed' where agency_id = <alice_agency_id>
+--                                                                   -> succeeds (members can edit)
+-- Bob: delete from projects where agency_id = <alice_agency_id>    -> 0 rows (owner only)
+-- Alice: delete from projects where agency_id = <alice_agency_id>  -> succeeds
+--
+-- Cross-tenant: Bob (as owner of Bob Agency only, no membership in Alice Agency)
+--   select * from projects where agency_id = <alice_agency_id>     -> 0 rows
+
+-- ---------------------------------------------------------------------------
+-- secrets: upsert_project_secrets / get_project_secrets / projects_public
+-- ---------------------------------------------------------------------------
+-- Bob (member, not owner): select upsert_project_secrets(<project_id>, 'sk-x', null)
+--                                                                   -> raises "not allowed" (42501)
+-- Alice (owner):            select upsert_project_secrets(<project_id>, 'sk-x', null)
+--                                                                   -> succeeds
+-- Alice: select service_role_key from get_project_secrets(<project_id>)
+--                                                                   -> permission denied
+--                                                                      (execute is granted to service_role only,
+--                                                                       not to authenticated)
+-- Alice: select has_service_key, has_database_url from projects_public where id = <project_id>
+--                                                                   -> has_service_key = true, has_database_url = false
+-- Worker (service_role, bypasses RLS): select * from get_project_secrets(<project_id>)
+--                                                                   -> returns the decrypted service_role_key
+
+-- ---------------------------------------------------------------------------
+-- runs / findings / alerts
+-- ---------------------------------------------------------------------------
+-- Alice/Bob: insert into runs (project_id, status) values (<project_id>, 'ok')
+--                                                                   -> rejected (insert revoked from authenticated)
+-- Alice/Bob: select * from runs where project_id = <project_id>    -> visible once the worker inserts a row
+-- A user outside Alice Agency: select * from runs where project_id = <alice's project> -> 0 rows
+
+-- ---------------------------------------------------------------------------
+-- run_requests
+-- ---------------------------------------------------------------------------
+-- Alice: insert into run_requests (agency_id, project_id, kind) values (<alice_agency_id>, <project_id>, 'run')
+--                                                                   -> succeeds, requested_by defaults to auth.uid()
+-- Bob (member of Alice Agency): same insert                        -> succeeds
+-- Bob: insert into run_requests (agency_id, project_id, kind) values (<bob_agency_id>, <alice's project>, 'run')
+--                                                                   -> rejected (project_id must belong to agency_id)
+-- Alice: insert ... values (<bob_agency_id>, null, 'telegram_test') -> rejected (not a member of Bob Agency)
+-- Alice/Bob: update run_requests set picked_at = now() ...          -> rejected (update not granted to authenticated;
+--                                                                      only the worker, as service_role, picks these up)
