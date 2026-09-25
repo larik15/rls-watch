@@ -1,42 +1,14 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider.jsx";
-import { listMyAgencies, createAgency } from "../lib/agencies.js";
+import { useCurrentAgency } from "../hooks/useCurrentAgency.js";
+import { createAgency } from "../lib/agencies.js";
 import { listProjects, listRecentRunsByProject, severeCount, trend } from "../lib/projects.js";
-
-const AGENCY_STORAGE_KEY = "rls-watch:agency-id";
-
-function StatusDot({ run }) {
-  if (!run) return <span className="dot dot-gray" title="No runs yet" />;
-  if (run.status === "error") return <span className="dot dot-gray" title={`Run failed: ${run.error ?? ""}`} />;
-  const severe = severeCount(run.counts);
-  if (severe > 0) return <span className="dot dot-red" title={`${severe} critical/high finding(s)`} />;
-  if ((run.counts?.medium ?? 0) > 0) return <span className="dot dot-yellow" title="Medium findings only" />;
-  return <span className="dot dot-green" title="Clean" />;
-}
-
-function TrendArrow({ direction }) {
-  if (direction === "up") return <span className="trend trend-up" title="Worse than last run">▲</span>;
-  if (direction === "down") return <span className="trend trend-down" title="Better than last run">▼</span>;
-  return <span className="trend trend-flat" title="No change">–</span>;
-}
-
-function relativeTime(iso) {
-  if (!iso) return "never";
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const mins = Math.round(diffMs / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  return `${days}d ago`;
-}
+import { StatusDot, TrendArrow, relativeTime } from "../components/StatusBadges.jsx";
 
 export function Dashboard() {
   const { user, signOut } = useAuth();
-  const [agencies, setAgencies] = useState(null);
-  const [agencyId, setAgencyId] = useState(() => localStorage.getItem(AGENCY_STORAGE_KEY));
+  const { agencies, agencyId, selectAgency, addAgency, loading: loadingAgencies, error: agencyError } = useCurrentAgency();
   const [projects, setProjects] = useState(null);
   const [runsByProject, setRunsByProject] = useState(new Map());
   const [error, setError] = useState(null);
@@ -44,26 +16,16 @@ export function Dashboard() {
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
-    listMyAgencies()
-      .then((list) => {
-        setAgencies(list);
-        const stillValid = list.some((a) => a.id === agencyId);
-        if (!stillValid) {
-          const first = list[0]?.id ?? null;
-          setAgencyId(first);
-          if (first) localStorage.setItem(AGENCY_STORAGE_KEY, first);
-        }
-      })
-      .catch((e) => setError(e.message));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (agencyError) setError(agencyError);
+  }, [agencyError]);
 
   useEffect(() => {
     if (!agencyId) {
-      setProjects(agencyId === null ? [] : null);
+      setProjects([]);
       return;
     }
     let cancelled = false;
+    setProjects(null);
     listProjects(agencyId)
       .then(async (list) => {
         if (cancelled) return;
@@ -77,19 +39,13 @@ export function Dashboard() {
     };
   }, [agencyId]);
 
-  function selectAgency(id) {
-    setAgencyId(id);
-    localStorage.setItem(AGENCY_STORAGE_KEY, id);
-  }
-
   async function handleCreateAgency(e) {
     e.preventDefault();
     setCreating(true);
     setError(null);
     try {
       const agency = await createAgency(newAgencyName.trim(), user.id);
-      setAgencies((prev) => [...(prev ?? []), agency]);
-      selectAgency(agency.id);
+      addAgency(agency);
       setNewAgencyName("");
     } catch (e) {
       setError(e.message);
@@ -122,7 +78,7 @@ export function Dashboard() {
 
       {error && <p className="notice notice-error">{error}</p>}
 
-      {agencies === null ? (
+      {loadingAgencies ? (
         <p className="muted">Loading…</p>
       ) : agencies.length === 0 ? (
         <div className="card">

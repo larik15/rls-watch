@@ -11,6 +11,27 @@ export async function listProjects(agencyId) {
   return data;
 }
 
+/** One project, via projects_public (no secret values). */
+export async function getProject(projectId) {
+  const { data, error } = await supabase.from("projects_public").select("*").eq("id", projectId).single();
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * @param {string} agencyId
+ * @param {{ name, supabase_url, anon_key, tables, buckets, rpc, two_account }} fields
+ */
+export async function createProject(agencyId, fields) {
+  const { data, error } = await supabase
+    .from("projects")
+    .insert({ agency_id: agencyId, ...fields })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 /**
  * The two most recent runs (latest + previous) for each of the given project ids,
  * as a Map<projectId, {latest, previous}>. Good enough for a status dot + trend

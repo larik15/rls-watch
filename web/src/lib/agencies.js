@@ -13,3 +13,16 @@ export async function createAgency(name, ownerId) {
   if (error) throw error;
   return data;
 }
+
+export async function getAgency(agencyId) {
+  const { data, error } = await supabase.from("agencies").select("*").eq("id", agencyId).single();
+  if (error) throw error;
+  return data;
+}
+
+/** Owner-only (enforced by RLS): update name and/or Telegram chat id. */
+export async function updateAgency(agencyId, fields) {
+  const { data, error } = await supabase.from("agencies").update(fields).eq("id", agencyId).select().single();
+  if (error) throw error;
+  return data;
+}
