@@ -1,0 +1,287 @@
+:root {
+  --bg: #0b0d10;
+  --bg-raised: #14171b;
+  --border: #262b31;
+  --text: #e6e8eb;
+  --text-muted: #8a919c;
+  --accent: #4f8cff;
+  --critical: #ff5c5c;
+  --high: #ff8a4c;
+  --medium: #e8c547;
+  --info: #6b7280;
+  --ok: #3ecf8e;
+
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+.mono,
+code,
+pre {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 24px 20px 64px;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 20px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.page-header h1 {
+  font-size: 18px;
+  margin: 0;
+  letter-spacing: 0.2px;
+}
+
+.page-header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 14px;
+}
+
+.page-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 16px;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.card {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px 24px;
+  max-width: 420px;
+}
+
+.card h2 {
+  margin-top: 0;
+  font-size: 16px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.table th,
+.table td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.table th {
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.badge {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.dot-green {
+  background: var(--ok);
+}
+.dot-yellow {
+  background: var(--medium);
+}
+.dot-red {
+  background: var(--critical);
+}
+.dot-gray {
+  background: var(--info);
+}
+
+.trend {
+  font-size: 13px;
+}
+.trend-up {
+  color: var(--critical);
+}
+.trend-down {
+  color: var(--ok);
+}
+.trend-flat {
+  color: var(--text-muted);
+}
+
+button,
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 14px;
+  cursor: pointer;
+}
+button:hover,
+.btn:hover {
+  filter: brightness(1.1);
+  text-decoration: none;
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.btn-link {
+  background: none;
+  color: var(--text-muted);
+  padding: 0;
+  font-size: 14px;
+}
+.btn-link:hover {
+  color: var(--text);
+  filter: none;
+}
+
+input,
+select,
+textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 14px;
+  width: 100%;
+}
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 1px solid var(--accent);
+}
+
+label {
+  display: block;
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+  margin-top: 12px;
+}
+
+form button {
+  margin-top: 16px;
+}
+
+.notice {
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 14px;
+  margin: 12px 0;
+}
+.notice-ok {
+  background: rgba(62, 207, 142, 0.12);
+  color: var(--ok);
+}
+.notice-error {
+  background: rgba(255, 92, 92, 0.12);
+  color: var(--critical);
+}
+
+.auth-page {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 360px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 32px 28px;
+}
+.auth-card h1 {
+  font-size: 20px;
+  margin: 0 0 4px;
+}
+
+.page-loading {
+  padding: 40px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.findings {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+.finding-severity {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+  margin-right: 8px;
+}
+.finding-severity.critical {
+  color: var(--critical);
+}
+.finding-severity.high {
+  color: var(--high);
+}
+.finding-severity.medium {
+  color: var(--medium);
+}
+.finding-severity.info {
+  color: var(--info);
+}
