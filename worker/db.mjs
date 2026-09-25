@@ -19,7 +19,7 @@ export async function loadEnabledProjects(admin) {
 
 /** Decrypted secrets for one project, via the service_role-only RPC. Vault-backed. */
 export async function getProjectSecrets(admin, projectId) {
-  const { data, error } = await admin.rpc("get_project_secrets", { project_id: projectId });
+  const { data, error } = await admin.rpc("get_project_secrets", { p_project_id: projectId });
   if (error) throw new Error(`getProjectSecrets(${projectId}): ${error.message}`);
   const row = Array.isArray(data) ? data[0] : data;
   return { serviceRoleKey: row?.service_role_key ?? null, databaseUrl: row?.database_url ?? null };

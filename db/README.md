@@ -21,6 +21,11 @@ SQL migrations for the RLS Watch Supabase project itself.
    The `alter default privileges` statements at the end make this automatic for any
    table added by a later migration, run the same way (SQL editor, as `postgres`).
 
+6. If you applied `001_init.sql` before the parameter fix landed in it, run
+   `004_fix_ambiguous_params.sql`. It drops and recreates the two RPC functions with
+   `p_`-prefixed parameters (saving secrets used to fail with
+   `column reference "project_id" is ambiguous`). Harmless on a fresh install.
+
 Run each file once. The migrations aren't idempotent: running `001_init.sql` a second time
 fails on `create table`.
 
@@ -34,8 +39,8 @@ fails on `create table`.
 | `projects_public` (view) | the same as `projects`, plus `has_service_key` and `has_database_url` flags |
 | `runs`, `findings`, `alerts` | members read; only the worker (service role) writes |
 | `run_requests` | members read and create requests for their own agency; the worker processes them |
-| `upsert_project_secrets(project_id, service_role_key, database_url)` | agency owner only. `null` leaves a value unchanged, `''` removes it |
-| `get_project_secrets(project_id)` | service role (worker) only |
+| `upsert_project_secrets(p_project_id, p_service_role_key, p_database_url)` | agency owner only. `null` leaves a value unchanged, `''` removes it |
+| `get_project_secrets(p_project_id)` | service role (worker) only |
 
 Client secrets are stored in Supabase Vault and referenced from `private.project_secrets`.
 The `private` schema isn't exposed through the Data API, and the browser never gets the

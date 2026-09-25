@@ -9,9 +9,9 @@ import { supabase } from "../supabaseClient.js";
  */
 export async function upsertProjectSecrets(projectId, { serviceRoleKey = null, databaseUrl = null } = {}) {
   const { error } = await supabase.rpc("upsert_project_secrets", {
-    project_id: projectId,
-    service_role_key: serviceRoleKey,
-    database_url: databaseUrl,
+    p_project_id: projectId,
+    p_service_role_key: serviceRoleKey,
+    p_database_url: databaseUrl,
   });
   if (error) throw error;
 }
