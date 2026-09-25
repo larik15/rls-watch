@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { getProject } from "../lib/projects.js";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { useAuth } from "../auth/AuthProvider.jsx";
+import { getProject, deleteProject } from "../lib/projects.js";
 import { listRuns, listFindings } from "../lib/runs.js";
+import { getMyRole } from "../lib/members.js";
 import { StatusDot, relativeTime } from "../components/StatusBadges.jsx";
 import { sortBySeverity } from "../../../shared/severity.mjs";
 import { diffFindings } from "../../../shared/diff.mjs";
@@ -27,9 +29,14 @@ function FindingsList({ findings, emptyText }) {
 
 export function ProjectDetail() {
   const { id } = useParams();
+  const navigate = useNavigate();
+  const { user } = useAuth();
   const [project, setProject] = useState(null);
   const [runs, setRuns] = useState(null);
   const [error, setError] = useState(null);
+  const [isOwner, setIsOwner] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState(null);
 
   const [selectedRunId, setSelectedRunId] = useState(null);
   const [findings, setFindings] = useState(null);
@@ -38,7 +45,11 @@ export function ProjectDetail() {
 
   useEffect(() => {
     getProject(id)
-      .then(setProject)
+      .then((p) => {
+        setProject(p);
+        return getMyRole(p.agency_id, user.id);
+      })
+      .then((role) => setIsOwner(role === "owner"))
       .catch((e) => setError(e.message));
     listRuns(id)
       .then((list) => {
@@ -46,7 +57,22 @@ export function ProjectDetail() {
         if (list.length) setSelectedRunId(list[0].id);
       })
       .catch((e) => setError(e.message));
-  }, [id]);
+  }, [id, user.id]);
+
+  async function handleDelete() {
+    if (!window.confirm(`Delete "${project.name}"? This removes its run history and findings too. This can't be undone.`)) {
+      return;
+    }
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteProject(id);
+      navigate("/");
+    } catch (e) {
+      setDeleteError(e.message);
+      setDeleting(false);
+    }
+  }
 
   const selectedIndex = useMemo(() => runs?.findIndex((r) => r.id === selectedRunId) ?? -1, [runs, selectedRunId]);
   const selectedRun = selectedIndex >= 0 ? runs[selectedIndex] : null;
@@ -109,8 +135,18 @@ export function ProjectDetail() {
             {project.supabase_url} {!project.enabled && <span className="badge">disabled</span>}
           </p>
         </div>
-        <Link to="/">Back to dashboard</Link>
+        <div className="page-header-right">
+          <Link to={`/projects/${id}/edit`}>Edit</Link>
+          {isOwner && (
+            <button className="btn-link" onClick={handleDelete} disabled={deleting} style={{ color: "var(--critical)" }}>
+              {deleting ? "Deleting…" : "Delete project"}
+            </button>
+          )}
+          <Link to="/">Back to dashboard</Link>
+        </div>
       </header>
+
+      {deleteError && <p className="notice notice-error">{deleteError}</p>}
 
       {runs.length === 0 ? (
         <p className="muted">No runs yet. Use "Run now" from the project's setup, or wait for the next sweep.</p>
