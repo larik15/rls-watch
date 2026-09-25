@@ -32,6 +32,19 @@ export async function createProject(agencyId, fields) {
   return data;
 }
 
+/** @param {{ name, supabase_url, anon_key, tables, buckets, rpc, two_account }} fields */
+export async function updateProject(projectId, fields) {
+  const { data, error } = await supabase.from("projects").update(fields).eq("id", projectId).select().single();
+  if (error) throw error;
+  return data;
+}
+
+/** Owner only (enforced by RLS' projects_delete policy). Cascades to runs/findings/alerts. */
+export async function deleteProject(projectId) {
+  const { error } = await supabase.from("projects").delete().eq("id", projectId);
+  if (error) throw error;
+}
+
 /**
  * The two most recent runs (latest + previous) for each of the given project ids,
  * as a Map<projectId, {latest, previous}>. Good enough for a status dot + trend

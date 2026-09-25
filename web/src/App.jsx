@@ -3,6 +3,7 @@ import { RequireAuth } from "./auth/RequireAuth.jsx";
 import { Login } from "./pages/Login.jsx";
 import { Dashboard } from "./pages/Dashboard.jsx";
 import { ProjectNew } from "./pages/ProjectNew.jsx";
+import { ProjectEdit } from "./pages/ProjectEdit.jsx";
 import { ProjectDetail } from "./pages/ProjectDetail.jsx";
 import { Settings } from "./pages/Settings.jsx";
 
@@ -31,6 +32,14 @@ export function App() {
         element={
           <RequireAuth>
             <ProjectDetail />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/projects/:id/edit"
+        element={
+          <RequireAuth>
+            <ProjectEdit />
           </RequireAuth>
         }
       />
