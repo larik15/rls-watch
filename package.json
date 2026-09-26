@@ -9,11 +9,13 @@
     "once": "node --env-file=.env worker/index.mjs --once",
     "test": "node --test worker/test/*.test.mjs"
   },
-  "engines": { "node": ">=20.6.0" },
+  "engines": {
+    "node": ">=20.6.0"
+  },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
     "pg": "^8.23.0",
-    "supabase-security-mcp": "^0.1.0"
+    "supabase-security-mcp": "0.1.0"
   },
   "license": "MIT"
 }

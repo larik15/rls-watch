@@ -1,8 +1,7 @@
-// twoAccountTest (supabase-security-mcp) already deletes its two temporary users and
-// their test rows in a `finally` block. This is a safety net for the case where that
-// cleanup silently failed (a delete request erroring out, a changed policy, a network
-// blip) — it re-checks the target project for anything left over, using the project's
-// own service role key, and reports exact ids so they can be removed by hand.
+// Fallback to the exact-id tracking in artifacts.mjs: after a two-account test, look for
+// any auth user with the test's email prefix (and rows those users own) in the client
+// project. Catches users created before tracking existed, or whose creation response
+// couldn't be read.
 
 import { authHeaders } from "supabase-security-mcp/src/probe.mjs";
 
@@ -17,7 +16,7 @@ async function safeJson(res) {
   }
 }
 
-/** Users left over from a two-account test (should normally be none). */
+/** Users left over from a two-account test (should normally be none). First page only. */
 export async function listLeftoverTestUsers(url, serviceRoleKey, fetchImpl = globalThis.fetch) {
   const base = url.replace(/\/+$/, "");
   const res = await fetchImpl(`${base}/auth/v1/admin/users?per_page=200`, {
@@ -32,9 +31,7 @@ export async function listLeftoverTestUsers(url, serviceRoleKey, fetchImpl = glo
 }
 
 /**
- * Rows in the two-account tables owned by any leftover test user. Only meaningful once
- * we already know which users didn't get cleaned up — an owned row can't be identified
- * any other way, since twoAccountTest doesn't hand back the ids it created.
+ * Rows in the two-account tables owned by any leftover test user.
  *
  * @param {Array<{name:string, ownerColumn?:string, idColumn?:string}>} tables
  * @param {Array<{id:string, email:string}>} leftoverUsers
@@ -52,7 +49,7 @@ export async function listLeftoverTestRows(url, serviceRoleKey, tables, leftover
       if (res.status !== 200) continue;
       const body = await safeJson(res);
       for (const row of Array.isArray(body) ? body : []) {
-        if (idCol in row) rows.push({ table: t.name, id: row[idCol] });
+        if (idCol in row) rows.push({ table: t.name, idColumn: idCol, id: row[idCol] });
       }
     }
   }
@@ -60,10 +57,7 @@ export async function listLeftoverTestRows(url, serviceRoleKey, tables, leftover
 }
 
 /**
- * @param {Object} cfg
- * @param {string} cfg.url
- * @param {string} cfg.serviceRoleKey
- * @param {Array<{name:string, ownerColumn?:string, idColumn?:string}>} cfg.tables
+ * @param {{url:string, serviceRoleKey:string, tables:Array}} cfg
  * @param {typeof fetch} [fetchImpl]
  * @returns {Promise<{leftoverUsers: Array, leftoverRows: Array}>}
  */
@@ -71,25 +65,4 @@ export async function verifyTwoAccountCleanup({ url, serviceRoleKey, tables }, f
   const leftoverUsers = await listLeftoverTestUsers(url, serviceRoleKey, fetchImpl);
   const leftoverRows = await listLeftoverTestRows(url, serviceRoleKey, tables, leftoverUsers, fetchImpl);
   return { leftoverUsers, leftoverRows };
-}
-
-/** Turn a verifyTwoAccountCleanup() result into a finding, or null if nothing was left. */
-export function cleanupFinding({ leftoverUsers, leftoverRows }) {
-  if (!leftoverUsers.length && !leftoverRows.length) return null;
-
-  const parts = [];
-  if (leftoverUsers.length) {
-    parts.push(`auth.users: ${leftoverUsers.map((u) => `${u.email} (${u.id})`).join(", ")}`);
-  }
-  if (leftoverRows.length) {
-    parts.push(`rows: ${leftoverRows.map((r) => `${r.table}.${r.id}`).join(", ")}`);
-  }
-
-  return {
-    severity: "critical",
-    kind: "test_artifacts_left",
-    table: null,
-    message: `The two-account test's own cleanup didn't finish — leftover test data: ${parts.join("; ")}.`,
-    fix: "Remove these by hand: delete the listed auth users (and their rows, if not already gone) in the client project.",
-  };
 }

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // RLS Watch worker. Two loops:
 //   - full sweep: every CHECK_INTERVAL_MINUTES (or once, with --once), check every
-//     enabled project, up to 3 at a time, 60s timeout each.
+//     enabled project, up to 3 at a time. Each run holds a lease on its project and
+//     ends as 'timeout' after 60s (checkProject), so no project runs twice at once.
 //   - run_requests: every 60s, handle "Run now" / "send test message" from the web app.
 //
 // Required env: WATCH_SUPABASE_URL, WATCH_SERVICE_ROLE_KEY, WEB_URL.
@@ -11,10 +12,9 @@ import { pathToFileURL } from "node:url";
 import { createAdminClient, loadEnabledProjects } from "./db.mjs";
 import { checkProject } from "./checkProject.mjs";
 import { processRunRequests } from "./runRequests.mjs";
-import { mapLimit, withTimeout } from "./pool.mjs";
+import { mapLimit } from "./pool.mjs";
 
 const PROJECT_CONCURRENCY = 3;
-const PROJECT_TIMEOUT_MS = 60_000;
 const RUN_REQUESTS_POLL_MS = 60_000;
 
 function requireEnv(name) {
@@ -27,24 +27,17 @@ export async function sweep(admin, { telegramBotToken, webUrl, fetchImpl = globa
   const projects = await loadEnabledProjects(admin);
   console.log(`[rls-watch] sweep: ${projects.length} enabled project(s)`);
 
-  const results = await mapLimit(projects, PROJECT_CONCURRENCY, async (project) => {
+  return mapLimit(projects, PROJECT_CONCURRENCY, async (project) => {
     try {
-      const result = await withTimeout(
-        checkProject({ admin, project, telegramBotToken, webUrl, fetchImpl }),
-        PROJECT_TIMEOUT_MS,
-        `project ${project.name} (${project.id})`
-      );
-      console.log(`[rls-watch] ${project.name}: ${result.status}${result.alerted ? " (alerted)" : ""}`);
+      const result = await checkProject({ admin, project, telegramBotToken, webUrl, fetchImpl });
+      const alert = result.alert ? ` (alert ${result.alert.status})` : "";
+      console.log(`[rls-watch] ${project.name}: ${result.status}${result.reason ? ` — ${result.reason}` : ""}${alert}`);
       return { project: project.id, ...result };
     } catch (err) {
-      // withTimeout rejected: checkProject's own run row is left open (started, not
-      // finished). Log it; the next sweep for this project starts a fresh run either way.
-      console.error(`[rls-watch] ${project.name}: timed out / failed outside checkProject: ${err.message}`);
-      return { project: project.id, status: "error", error: err.message };
+      console.error(`[rls-watch] ${project.name}: check failed outside the run:`, err);
+      return { project: project.id, status: "error" };
     }
   });
-
-  return results;
 }
 
 async function main() {
@@ -55,14 +48,14 @@ async function main() {
   const intervalMinutes = Number(process.env.CHECK_INTERVAL_MINUTES ?? 1440);
 
   const admin = createAdminClient(watchUrl, watchServiceRoleKey);
-  const once = process.argv.includes("--once");
 
-  if (once) {
+  if (process.argv.includes("--once")) {
     await sweep(admin, { telegramBotToken, webUrl });
     return;
   }
 
   console.log(`[rls-watch] worker started; sweeping every ${intervalMinutes}m, run_requests every 60s`);
+  if (!telegramBotToken) console.warn("[rls-watch] TELEGRAM_BOT_TOKEN is not set: alerts will be recorded as not delivered");
 
   const runSweep = () => sweep(admin, { telegramBotToken, webUrl }).catch((e) => console.error("[rls-watch] sweep failed:", e));
   const runRequests = () =>
