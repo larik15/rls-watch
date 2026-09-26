@@ -265,12 +265,10 @@ create policy run_requests_insert on public.run_requests for insert to authentic
 
 -- Browser → DB. Owner only. Semantics per argument:
 --   null  = leave unchanged,  ''  = remove,  anything else = set.
--- Parameters are p_-prefixed: in plpgsql, `on conflict (project_id)` is parsed as a
--- column reference, and a same-named parameter makes it ambiguous.
 create function public.upsert_project_secrets(
-  p_project_id       uuid,
-  p_service_role_key text,
-  p_database_url     text
+  project_id       uuid,
+  service_role_key text,
+  database_url     text
 )
 returns void
 language plpgsql volatile security definer set search_path = ''
@@ -279,44 +277,44 @@ declare
   v_agency uuid;
   v_row    private.project_secrets;
 begin
-  select p.agency_id into v_agency from public.projects p where p.id = p_project_id;
+  select p.agency_id into v_agency from public.projects p where p.id = upsert_project_secrets.project_id;
   if v_agency is null or not public.is_agency_owner(v_agency) then
     raise exception 'not allowed' using errcode = '42501';
   end if;
 
-  insert into private.project_secrets (project_id) values (p_project_id)
+  insert into private.project_secrets (project_id) values (upsert_project_secrets.project_id)
   on conflict (project_id) do nothing;
   select * into v_row from private.project_secrets s
-  where s.project_id = p_project_id for update;
+  where s.project_id = upsert_project_secrets.project_id for update;
 
-  if p_service_role_key is not null then
-    if p_service_role_key = '' then
+  if service_role_key is not null then
+    if service_role_key = '' then
       delete from vault.secrets where id = v_row.service_role_key_id;
       v_row.service_role_key_id := null;
     elsif v_row.service_role_key_id is null then
       v_row.service_role_key_id := vault.create_secret(
-        p_service_role_key, 'rls-watch:' || p_project_id || ':service_role_key');
+        service_role_key, 'rls-watch:' || v_row.project_id || ':service_role_key');
     else
-      perform vault.update_secret(v_row.service_role_key_id, p_service_role_key);
+      perform vault.update_secret(v_row.service_role_key_id, service_role_key);
     end if;
   end if;
 
-  if p_database_url is not null then
-    if p_database_url = '' then
+  if database_url is not null then
+    if database_url = '' then
       delete from vault.secrets where id = v_row.database_url_id;
       v_row.database_url_id := null;
     elsif v_row.database_url_id is null then
       v_row.database_url_id := vault.create_secret(
-        p_database_url, 'rls-watch:' || p_project_id || ':database_url');
+        database_url, 'rls-watch:' || v_row.project_id || ':database_url');
     else
-      perform vault.update_secret(v_row.database_url_id, p_database_url);
+      perform vault.update_secret(v_row.database_url_id, database_url);
     end if;
   end if;
 
   update private.project_secrets s
   set service_role_key_id = v_row.service_role_key_id,
       database_url_id     = v_row.database_url_id
-  where s.project_id = p_project_id;
+  where s.project_id = v_row.project_id;
 end;
 $$;
 
@@ -324,7 +322,7 @@ revoke all on function public.upsert_project_secrets(uuid, text, text) from publ
 grant execute on function public.upsert_project_secrets(uuid, text, text) to authenticated;
 
 -- DB → worker. service_role only.
-create function public.get_project_secrets(p_project_id uuid)
+create function public.get_project_secrets(project_id uuid)
 returns table (service_role_key text, database_url text)
 language sql stable security definer set search_path = ''
 as $$
@@ -332,7 +330,7 @@ as $$
     (select d.decrypted_secret from vault.decrypted_secrets d where d.id = s.service_role_key_id),
     (select d.decrypted_secret from vault.decrypted_secrets d where d.id = s.database_url_id)
   from private.project_secrets s
-  where s.project_id = p_project_id;
+  where s.project_id = get_project_secrets.project_id;
 $$;
 
 revoke all on function public.get_project_secrets(uuid) from public, anon, authenticated;

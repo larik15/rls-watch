@@ -9,7 +9,8 @@
 --
 -- Postgres refuses to rename an input parameter with `create or replace`, so both
 -- functions are dropped and recreated, then their grants re-applied. Neither has
--- dependent objects. Safe to run on a fresh install too (001 already has the fix).
+-- dependent objects. Required on every install: 001 is frozen as shipped and still
+-- has the unprefixed (broken) parameters.
 
 begin;
 
