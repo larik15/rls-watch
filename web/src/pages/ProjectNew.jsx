@@ -1,18 +1,29 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { useAuth } from "../auth/AuthProvider.jsx";
 import { useCurrentAgency } from "../hooks/useCurrentAgency.js";
 import { createProject } from "../lib/projects.js";
 import { upsertProjectSecrets } from "../lib/secrets.js";
 import { requestRun } from "../lib/runRequests.js";
+import { getMyRole } from "../lib/members.js";
 import { ProjectForm } from "../components/ProjectForm.jsx";
 
 export function ProjectNew() {
+  const { user } = useAuth();
   const { agencyId, loading: loadingAgency } = useCurrentAgency();
+  const [role, setRole] = useState(undefined);
 
   const [error, setError] = useState(null);
   const [created, setCreated] = useState(null); // the new project row, once saved
   const [runQueued, setRunQueued] = useState(false);
   const [queueing, setQueueing] = useState(false);
+
+  useEffect(() => {
+    if (!agencyId) return;
+    getMyRole(agencyId, user.id)
+      .then(setRole)
+      .catch((e) => setError(e.message));
+  }, [agencyId, user.id]);
 
   async function handleCreate({ serviceRoleKey, databaseUrl, ...fields }) {
     const project = await createProject(agencyId, fields);
@@ -38,7 +49,7 @@ export function ProjectNew() {
     }
   }
 
-  if (loadingAgency) return <div className="page">Loading…</div>;
+  if (loadingAgency || (agencyId && role === undefined && !error)) return <div className="page">Loading…</div>;
   if (!agencyId) {
     return (
       <div className="page">
@@ -79,7 +90,8 @@ export function ProjectNew() {
       <header className="page-header">
         <h1>Add project</h1>
       </header>
-      <ProjectForm onSubmit={handleCreate} submitLabel="Save project" pendingLabel="Saving…" />
+      {error && <p className="notice notice-error">{error}</p>}
+      <ProjectForm isOwner={role === "owner"} onSubmit={handleCreate} submitLabel="Save project" pendingLabel="Saving…" />
     </div>
   );
 }

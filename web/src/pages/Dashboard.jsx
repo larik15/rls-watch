@@ -3,7 +3,14 @@ import { Link } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider.jsx";
 import { useCurrentAgency } from "../hooks/useCurrentAgency.js";
 import { createAgency } from "../lib/agencies.js";
-import { listProjects, listRecentRunsByProject, severeCount, trend } from "../lib/projects.js";
+import {
+  listProjects,
+  listRecentRunsByProject,
+  listLatestAlertsByProject,
+  alertUndelivered,
+  severeCount,
+  trend,
+} from "../lib/projects.js";
 import { StatusDot, TrendArrow, relativeTime } from "../components/StatusBadges.jsx";
 
 export function Dashboard() {
@@ -11,6 +18,7 @@ export function Dashboard() {
   const { agencies, agencyId, selectAgency, addAgency, loading: loadingAgencies, error: agencyError } = useCurrentAgency();
   const [projects, setProjects] = useState(null);
   const [runsByProject, setRunsByProject] = useState(new Map());
+  const [alertsByProject, setAlertsByProject] = useState(new Map());
   const [error, setError] = useState(null);
   const [newAgencyName, setNewAgencyName] = useState("");
   const [creating, setCreating] = useState(false);
@@ -30,8 +38,14 @@ export function Dashboard() {
       .then(async (list) => {
         if (cancelled) return;
         setProjects(list);
-        const runs = await listRecentRunsByProject(list.map((p) => p.id));
-        if (!cancelled) setRunsByProject(runs);
+        const [runs, alerts] = await Promise.all([
+          listRecentRunsByProject(list.map((p) => p.id)),
+          listLatestAlertsByProject(agencyId),
+        ]);
+        if (!cancelled) {
+          setRunsByProject(runs);
+          setAlertsByProject(alerts);
+        }
       })
       .catch((e) => !cancelled && setError(e.message));
     return () => {
@@ -98,6 +112,29 @@ export function Dashboard() {
         </div>
       ) : (
         <>
+          {(() => {
+            const agency = agencies.find((a) => a.id === agencyId);
+            const undelivered = (projects ?? []).filter((p) => alertUndelivered(alertsByProject.get(p.id)));
+            if (agency && !agency.telegram_chat_id) {
+              return (
+                <p className="notice notice-warn">
+                  <strong>Alerts not configured.</strong> New critical/high findings aren't sent anywhere until a Telegram
+                  chat id is set in <Link to="/settings">Settings</Link>.
+                  {undelivered.length > 0 && ` Undelivered so far: ${undelivered.map((p) => p.name).join(", ")}.`}
+                </p>
+              );
+            }
+            if (undelivered.length > 0) {
+              return (
+                <p className="notice notice-warn">
+                  <strong>Alerts not delivered</strong> for {undelivered.map((p) => p.name).join(", ")} — open the project
+                  for the reason.
+                </p>
+              );
+            }
+            return null;
+          })()}
+
           <div className="page-toolbar">
             <Link className="btn" to="/projects/new">
               Add project
@@ -121,20 +158,21 @@ export function Dashboard() {
               </thead>
               <tbody>
                 {projects.map((p) => {
-                  const runs = runsByProject.get(p.id) ?? { latest: null, previous: null };
+                  const runs = runsByProject.get(p.id) ?? { latest: null, latestOk: null, previousOk: null };
                   return (
                     <tr key={p.id}>
                       <td>
                         <Link to={`/projects/${p.id}`}>{p.name}</Link>
                         {!p.enabled && <span className="badge">disabled</span>}
+                        {alertUndelivered(alertsByProject.get(p.id)) && <span className="badge">alert not delivered</span>}
                       </td>
                       <td className="mono">{relativeTime(runs.latest?.started_at)}</td>
                       <td>
-                        <StatusDot run={runs.latest} />
+                        <StatusDot run={runs.latest} withLabel />
                       </td>
-                      <td className="mono">{severeCount(runs.latest?.counts)}</td>
+                      <td className="mono">{severeCount(runs.latest?.counts) ?? "–"}</td>
                       <td>
-                        <TrendArrow direction={trend(runs.latest, runs.previous)} />
+                        <TrendArrow direction={trend(runs.latestOk, runs.previousOk)} />
                       </td>
                     </tr>
                   );

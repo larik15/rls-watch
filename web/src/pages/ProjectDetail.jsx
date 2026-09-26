@@ -2,11 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider.jsx";
 import { getProject, deleteProject } from "../lib/projects.js";
-import { listRuns, listFindings } from "../lib/runs.js";
+import { listRuns, listFindings, getLatestAlert } from "../lib/runs.js";
 import { getMyRole } from "../lib/members.js";
-import { StatusDot, relativeTime } from "../components/StatusBadges.jsx";
+import { StatusDot, UndeliveredAlertBanner, relativeTime, runState } from "../components/StatusBadges.jsx";
 import { sortBySeverity } from "../../../shared/severity.mjs";
 import { diffFindings } from "../../../shared/diff.mjs";
+import { targetsEvaluated } from "../../../shared/checks.mjs";
 
 function FindingsList({ findings, emptyText }) {
   if (!findings.length) return <p className="muted">{emptyText}</p>;
@@ -27,12 +28,67 @@ function FindingsList({ findings, emptyText }) {
   );
 }
 
+/** What a run did and didn't evaluate (runs.checks). Pre-006 runs have no checks. */
+function Coverage({ checks }) {
+  if (!checks) return null;
+  const probe = checks.probe ?? {};
+  const rows = [];
+
+  const probed = probe.evaluated?.length ?? 0;
+  const skipped = probe.not_evaluated ?? [];
+  rows.push([
+    "Anon probe",
+    `${probed} target(s) evaluated${probe.tables_source === "discovered" ? " (tables auto-discovered)" : ""}` +
+      (skipped.length ? `; not evaluated: ${skipped.map((t) => `${t.target} (${t.reason})`).join(", ")}` : "") +
+      (probe.rpc_skipped ? `; ${probe.rpc_skipped} RPC function(s) not called — not confirmed by the owner` : ""),
+  ]);
+  rows.push([
+    "Policy audit",
+    checks.policies?.evaluated ? `ran — ${checks.policies.tables} table(s) in public` : `not run — ${checks.policies?.reason}`,
+  ]);
+  const ta = checks.two_account ?? {};
+  rows.push([
+    "Two-account test",
+    ta.reason
+      ? `not run — ${ta.reason}`
+      : `${ta.evaluated?.length ?? 0} table(s) tested` +
+        (ta.not_evaluated?.length ? `; not evaluated: ${ta.not_evaluated.map((t) => `${t.table} (${t.reason})`).join(", ")}` : ""),
+  ]);
+  rows.push([
+    "Test-data cleanup",
+    checks.artifacts?.evaluated
+      ? checks.artifacts.pending
+        ? `${checks.artifacts.pending} leftover(s) — see findings`
+        : "nothing left over"
+      : `not verified — ${checks.artifacts?.reason}`,
+  ]);
+
+  return (
+    <div className="card" style={{ maxWidth: "none", marginBottom: 16, padding: "12px 16px" }}>
+      <h3 style={{ marginTop: 0, fontSize: 14 }}>Coverage</h3>
+      <table className="table" style={{ fontSize: 13 }}>
+        <tbody>
+          {rows.map(([label, text]) => (
+            <tr key={label}>
+              <td className="muted" style={{ width: 150, padding: "4px 8px 4px 0", borderBottom: "none" }}>
+                {label}
+              </td>
+              <td style={{ padding: "4px 0", borderBottom: "none" }}>{text}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function ProjectDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
   const [project, setProject] = useState(null);
   const [runs, setRuns] = useState(null);
+  const [latestAlert, setLatestAlert] = useState(null);
   const [error, setError] = useState(null);
   const [isOwner, setIsOwner] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -57,6 +113,9 @@ export function ProjectDetail() {
         if (list.length) setSelectedRunId(list[0].id);
       })
       .catch((e) => setError(e.message));
+    getLatestAlert(id)
+      .then(setLatestAlert)
+      .catch((e) => setError(e.message));
   }, [id, user.id]);
 
   async function handleDelete() {
@@ -76,37 +135,45 @@ export function ProjectDetail() {
 
   const selectedIndex = useMemo(() => runs?.findIndex((r) => r.id === selectedRunId) ?? -1, [runs, selectedRunId]);
   const selectedRun = selectedIndex >= 0 ? runs[selectedIndex] : null;
-  const previousRun = selectedIndex >= 0 ? (runs[selectedIndex + 1] ?? null) : null;
+  // Only for runs recorded before the worker stored its own diff: the previous ok run.
+  const previousOkRun = selectedIndex >= 0 ? (runs.slice(selectedIndex + 1).find((r) => r.status === "ok") ?? null) : null;
 
   useEffect(() => {
-    if (!selectedRunId) return;
+    if (!selectedRun) return;
     setFindings(null);
     setPreviousFindings(null);
     setCopyStatus("idle");
-    listFindings(selectedRunId)
+    if (selectedRun.status !== "ok") {
+      setFindings([]);
+      setPreviousFindings([]);
+      return;
+    }
+    listFindings(selectedRun.id)
       .then(setFindings)
       .catch((e) => setError(e.message));
-    if (previousRun) {
-      listFindings(previousRun.id)
+    if (selectedRun.diff || !previousOkRun) {
+      setPreviousFindings([]);
+    } else {
+      listFindings(previousOkRun.id)
         .then(setPreviousFindings)
         .catch((e) => setError(e.message));
-    } else {
-      setPreviousFindings([]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRunId]);
 
   const diff = useMemo(() => {
-    if (!findings || previousFindings === null) return null;
-    const result = diffFindings(
-      previousFindings.map((f) => f.fingerprint),
-      findings
-    );
-    const resolved = result.resolved
-      .map((fp) => previousFindings.find((f) => f.fingerprint === fp))
-      .filter(Boolean);
-    return { new: result.new, resolved, unchanged: result.unchanged };
-  }, [findings, previousFindings]);
+    if (!selectedRun || selectedRun.status !== "ok" || !findings) return null;
+    if (selectedRun.diff) {
+      const isNew = new Set(selectedRun.diff.new ?? []);
+      return {
+        new: findings.filter((f) => isNew.has(f.fingerprint)),
+        resolved: selectedRun.diff.resolved ?? [],
+        notEvaluated: selectedRun.diff.not_evaluated ?? [],
+      };
+    }
+    if (previousFindings === null) return null;
+    return diffFindings(previousFindings, findings);
+  }, [selectedRun, findings, previousFindings]);
 
   async function handleCopyReport() {
     if (!selectedRun?.report_md) return;
@@ -125,6 +192,8 @@ export function ProjectDetail() {
   }
 
   if (!project || !runs) return <div className="page">Loading…</div>;
+
+  const nothingChecked = selectedRun?.status === "ok" && targetsEvaluated(selectedRun.checks) === 0;
 
   return (
     <div className="page">
@@ -157,6 +226,7 @@ export function ProjectDetail() {
       </header>
 
       {deleteError && <p className="notice notice-error">{deleteError}</p>}
+      <UndeliveredAlertBanner alert={latestAlert} />
 
       {runs.length === 0 ? (
         <p className="muted">No runs yet. Use "Run now" from the project's setup, or wait for the next sweep.</p>
@@ -181,7 +251,7 @@ export function ProjectDetail() {
                       fontWeight: r.id === selectedRunId ? 600 : 400,
                     }}
                   >
-                    <StatusDot run={r} />
+                    <StatusDot run={r} withLabel />
                     <span className="mono" style={{ fontSize: 13 }}>
                       {relativeTime(r.started_at)}
                     </span>
@@ -196,46 +266,72 @@ export function ProjectDetail() {
               <>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                   <div className="mono muted">
-                    {new Date(selectedRun.started_at).toLocaleString()} —{" "}
-                    {selectedRun.status === "error" ? `error: ${selectedRun.error}` : "ok"}
+                    {new Date(selectedRun.started_at).toLocaleString()} — {runState(selectedRun).label ?? selectedRun.status}
+                    {selectedRun.error && `: ${selectedRun.error}`}
                   </div>
                   {selectedRun.report_md && (
                     <button onClick={handleCopyReport}>{copyStatus === "copied" ? "Copied!" : "Copy client report (Markdown)"}</button>
                   )}
                 </div>
 
-                {diff && (diff.new.length > 0 || diff.resolved.length > 0) && (
-                  <div className="card" style={{ marginBottom: 16 }}>
-                    <h3 style={{ marginTop: 0, fontSize: 14 }}>What changed</h3>
-                    {diff.new.length > 0 && (
-                      <>
-                        <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
-                          NEW ({diff.new.length})
-                        </div>
-                        <FindingsList findings={diff.new} emptyText="" />
-                      </>
-                    )}
-                    {diff.resolved.length > 0 && (
-                      <>
-                        <div className="muted" style={{ fontSize: 12, margin: "12px 0 4px" }}>
-                          RESOLVED ({diff.resolved.length})
-                        </div>
-                        <FindingsList findings={diff.resolved} emptyText="" />
-                      </>
-                    )}
-                  </div>
-                )}
-                {previousFindings !== null && previousFindings.length === 0 && selectedIndex === runs.length - 1 && (
-                  <p className="muted" style={{ fontSize: 13 }}>
-                    First run — nothing to compare against yet.
+                {nothingChecked && (
+                  <p className="notice notice-warn">
+                    <strong>Nothing checked.</strong> This run couldn't evaluate a single target, so "no findings" means
+                    nothing here. See Coverage for why.
                   </p>
                 )}
 
-                <h3 style={{ fontSize: 14 }}>Findings ({findings?.length ?? 0})</h3>
-                {findings === null ? (
-                  <p className="muted">Loading…</p>
+                <Coverage checks={selectedRun.checks} />
+
+                {selectedRun.status !== "ok" ? (
+                  <p className="muted">
+                    This run didn't complete, so it has no findings or counts. The previous successful run's results still
+                    stand.
+                  </p>
                 ) : (
-                  <FindingsList findings={findings} emptyText="Nothing found by these checks in this run." />
+                  <>
+                    {diff && (diff.new.length > 0 || diff.resolved.length > 0 || diff.notEvaluated.length > 0) && (
+                      <div className="card" style={{ maxWidth: "none", marginBottom: 16 }}>
+                        <h3 style={{ marginTop: 0, fontSize: 14 }}>What changed</h3>
+                        {diff.new.length > 0 && (
+                          <>
+                            <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
+                              NEW ({diff.new.length})
+                            </div>
+                            <FindingsList findings={diff.new} emptyText="" />
+                          </>
+                        )}
+                        {diff.resolved.length > 0 && (
+                          <>
+                            <div className="muted" style={{ fontSize: 12, margin: "12px 0 4px" }}>
+                              RESOLVED ({diff.resolved.length})
+                            </div>
+                            <FindingsList findings={diff.resolved} emptyText="" />
+                          </>
+                        )}
+                        {diff.notEvaluated.length > 0 && (
+                          <>
+                            <div className="muted" style={{ fontSize: 12, margin: "12px 0 4px" }}>
+                              NOT EVALUATED THIS RUN ({diff.notEvaluated.length}) — last known open; the check didn't run
+                            </div>
+                            <FindingsList findings={diff.notEvaluated} emptyText="" />
+                          </>
+                        )}
+                      </div>
+                    )}
+
+                    <h3 style={{ fontSize: 14 }}>Findings ({findings?.length ?? 0})</h3>
+                    {findings === null ? (
+                      <p className="muted">Loading…</p>
+                    ) : (
+                      <FindingsList
+                        findings={findings}
+                        emptyText={
+                          nothingChecked ? "No findings — but nothing was checked." : "Nothing found by the checks that ran."
+                        }
+                      />
+                    )}
+                  </>
                 )}
               </>
             )}
