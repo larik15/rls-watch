@@ -1,115 +1,158 @@
 # RLS Watch
 
-A hosted monitor for the security of many Supabase projects. It runs the same checks as
-[`supabase-security-mcp`](https://www.npmjs.com/package/supabase-security-mcp) on a schedule,
-against every project you register, and alerts on Telegram when something opens up.
+Scheduled security checks for many Supabase projects, with Telegram alerts when something
+opens up. It runs the checks from
+[`supabase-security-mcp`](https://www.npmjs.com/package/supabase-security-mcp) against every
+project you register and diffs each run against the last one.
+
+It's meant to be self-hosted by the agency that looks after the projects: one Supabase
+project of its own, a worker in Docker on your infrastructure, and a static dashboard.
+There is also a hosted instance at `watch.sixthgear.dev`; it's invite-only (sign-ups are
+disabled in its Supabase Auth settings).
 
 ## Why
 
-Supabase's Advisor tells you whether RLS is *enabled* on a table, not whether the policies
-on it actually do what you think. A policy with `using (true)`, a bucket left public, a
-service-role key checked into a client bundle — none of that shows up as a red flag in the
-dashboard. If you run an agency with ten or twenty client projects, nobody goes back and
-re-checks them after week one, and a Supabase upgrade or a rushed migration can quietly
-reopen something that used to be fixed. RLS Watch exists to keep asking the question
-instead of asking it once.
+Supabase's Advisor tells you RLS is *enabled* on a table, not that the policies on it do
+what you think. A policy with `using (true)`, a `SECURITY DEFINER` function anyone can call,
+a public bucket — the table still shows as protected. An agency with ten or twenty client
+apps checks this once, at launch; after that, a migration or a rushed fix can quietly reopen
+something and nobody notices. RLS Watch keeps asking.
+
+## How it checks
+
+The checks come from `supabase-security-mcp` (pinned to an exact version). What each one
+needs, and what it can find:
+
+| Check | Credential | Finding kinds |
+| --- | --- | --- |
+| Anon probe — read one row from each table, list each bucket, call each RPC with `{}` | anon / publishable key | `anon_open_table`, `anon_open_bucket`, `anon_open_rpc` |
+| Policy audit — reads `pg_class`, `pg_policies`, `pg_proc` and table grants | database URL | `rls_disabled`, `rls_disabled_unexposed`, `rls_no_policies`, `policy_no_to_clause`, `policy_open_read`, `policy_open_insert`, `policy_open_write`, `definer_function_exposed` |
+| Two-account test — user B tries to read/update/delete user A's row | service role key (+ anon key) | `cross_tenant_read`, `cross_tenant_update`, `cross_tenant_delete` |
+| Test-data cleanup — confirms the two-account test left nothing behind | service role key | `test_artifacts_left` |
+
+With a database URL and no table list, the probe uses every table the audit found in
+`public`. Each run records what it actually evaluated; a check that didn't run (no
+credential, request failed, test disabled) leaves its earlier findings marked *not
+evaluated* rather than *resolved*, and a run that evaluated nothing shows as "nothing
+checked", never as clean.
+
+## Trust model
+
+Read this before you give RLS Watch a client's credentials.
+
+**What the worker holds.** Its `.env` has the RLS Watch service role key. With it, anyone can
+call `get_project_secrets()` and read every stored client credential — each client's service
+role key and database URL — and every agency's data, bypassing RLS. Treat the worker host and
+its `.env` as holding all of your clients' keys at once. It doesn't need
+`WATCH_DATABASE_URL` (that's only for applying migrations); leave it off the server.
+
+**What Vault does and doesn't do.** Client service keys and database URLs are stored in
+Supabase Vault: encrypted at rest, never returned to the browser, readable only through a
+`service_role`-only function. That is not a boundary against the RLS Watch project's service
+role, its `postgres` role, or anyone with access to its Supabase dashboard / SQL editor — all
+of them can read the decrypted values.
+
+**Credentials in plain text.** The anon key is stored as a normal column and visible to every
+member of the agency. The database and the form refuse a secret key in that field
+(`sb_secret_…`, or a JWT whose role isn't `anon`).
+
+**Key formats.** Supabase's newer keys are `sb_publishable_…` (replaces the anon key) and
+`sb_secret_…` (replaces the service role key); both go in the `apikey` header. The legacy JWT
+keys (`eyJ…`, role `anon` / `service_role`) still work.
+
+**The database URL is a full login.** The audit only reads catalog views, but the URL you
+paste is usually the `postgres` user's, which can read and change everything. You can give it
+a dedicated role with just enough to read the catalogs instead. Use the **session pooler**
+URL (`…pooler.supabase.com:5432`): direct connections to `db.<ref>.supabase.co:5432` are
+IPv6-only, and the worker's Docker network is IPv4. The audit connection uses TLS but doesn't
+verify the server certificate.
+
+**The two-account test writes to the client's project.** It creates two real auth users,
+signs them in, inserts a row per configured table, and tries to read, update and delete it as
+the other user. Triggers, webhooks, auth hooks and emails fire exactly as they would for a
+real signup. It's off by default, and only the agency owner can turn it on. Every user and
+row it creates is recorded by id before the test continues, cleanup is re-verified after the
+test and retried at the start of the next run, and anything still there becomes a critical
+`test_artifacts_left` finding listing the exact ids. **Get the client's written permission
+before running write tests against their project.**
+
+**RPC probes call functions.** Each listed RPC is invoked with the anon key and empty
+arguments on every run. Nothing is called until the owner confirms the list ("these functions
+will be invoked daily with the anon key"); a member editing the list resets that.
+
+**Where the worker connects.** Besides its own RLS Watch project and `api.telegram.org`, only
+to client URLs of the form `https://<20-letter ref>.supabase.co` and Postgres hosts under
+`*.supabase.com` / `*.supabase.co`, checked when saved (database trigger and form) and again
+by the worker before connecting; Postgres URL parameters that would redirect the connection
+(`?host=`, `?sslkey=`, …) are refused. It never follows redirects, times out each
+request after 15 s and each project after 60 s. Changing a project's Supabase URL is
+owner-only and deletes its stored secrets; replacing the database URL deletes the stored
+service key unless you enter it again.
+
+**Network restrictions.** If a client uses Supabase Network Restrictions, they need to allow
+the worker's egress IP. Publish yours to clients; the hosted instance connects from
+`2.28.12.7` (IPv4 only).
+
+**Alerts.** Telegram bot messages aren't end-to-end encrypted: Telegram can read them. They
+contain project names, table and policy names and finding text, but no credentials. If the
+bot token or chat id is missing, the alert is recorded as not delivered and the dashboard says
+so.
+
+**What members can see.** Error text shown in the dashboard is stripped of connection
+strings, hosts, user names, keys and SQL; the full error is only in the worker's logs.
 
 ## Architecture
 
-Three pieces, one Supabase project of its own (called "RLS Watch" below, distinct from the
-client projects it monitors):
-
-- **db** — the RLS Watch project's own schema (`agencies`, `members`, `projects`, `runs`,
-  `findings`, `alerts`, `run_requests`). Everything has RLS on. A user only ever sees rows
-  belonging to agencies they're a member of, enforced by a `is_agency_member(agency_id)`
-  helper function (`SECURITY DEFINER`, `STABLE`) that every policy calls instead of
-  re-deriving membership inline. There's no `using (true)` anywhere — this product can't
-  have the bugs it looks for.
-
-  Each monitored project's `service_role_key` and `database_url` are secrets, not plain
-  columns: they're stored in **Supabase Vault** and referenced from a `private` schema
-  that the Data API never exposes. The web app writes them through a `SECURITY DEFINER`
-  RPC (`upsert_project_secrets`, agency owner only) and never reads them back — the
-  `projects_public` view only exposes `has_service_key` / `has_database_url` booleans. The
-  worker reads them through a separate RPC (`get_project_secrets`) whose `execute`
-  privilege is granted only to `service_role`, not `authenticated`.
-
-- **worker** — a Node service with no HTTP surface. On a timer (`CHECK_INTERVAL_MINUTES`,
-  default daily) it loads every enabled project, pulls each one's secrets from Vault, and
-  for each project: runs `runProbes` (anon-key checks against the tables/buckets/RPCs you
-  listed), `auditPolicies` if a `database_url` was given, and `twoAccountTest` if a
-  `service_role_key` and `two_account` config were given. Results become a `runs` row and
-  a set of `findings`, each with a stable fingerprint so the worker can diff against the
-  previous run and tell new findings from unchanged ones. New critical/high findings, or a
-  previously-fixed check that's now open again, trigger a Telegram message to the agency.
-  A project failing (bad key, network error, whatever) is recorded as `status='error'` and
-  does not stop the sweep for the rest. The web app can also ask for an immediate run: it
-  inserts a `run_requests` row, which the worker polls for every minute.
-
-- **web** — a Vite + React dashboard (Supabase Auth, email magic link). Project list with
-  status and trend, per-project run history with findings grouped by severity and a
-  markdown report you can copy to send a client, and a settings page for the agency's name
-  and Telegram chat id. Talks to the RLS Watch Supabase project directly with the anon key;
-  everything is gated by the RLS policies above, there's no separate API layer.
+- **db** (`db/`) — the RLS Watch project's own schema. RLS on every table; a user sees only
+  rows of agencies they're a member of (`is_agency_member(agency_id)`, `SECURITY DEFINER`,
+  used by every policy). `runs`, `findings`, `alerts` and `two_account_artifacts` carry
+  `agency_id` and are written only by the worker. Triggers validate project input, keep
+  `agency_id` immutable and consistent, and rate-limit on-demand requests (3 runs per project
+  per hour, 20 per agency per day, 3 Telegram tests per agency per day).
+- **worker** (`worker/`) — a Node service with no HTTP surface. Every
+  `CHECK_INTERVAL_MINUTES` (default 1440) it checks each enabled project, three at a time.
+  A run holds a lease on its project (`claim_project_run`), so the same project never runs
+  twice at once; a run that outlives its lease ends as `timeout`. Findings and the final
+  status are written in one transaction (`complete_run`); alerts are sent only after that,
+  so a failed Telegram send can't change a run's outcome. Every minute it also claims
+  "Run now" / "send test message" requests from `run_requests`, with an expiring lease.
+- **web** (`web/`) — Vite + React, Supabase Auth magic links, talking to the RLS Watch
+  project directly with its anon key; RLS is the only gate.
 
 ## Self-hosting
 
 ### 1. Database
 
 Create a Supabase project for RLS Watch itself (separate from anything you'll monitor).
-Confirm **Database → Extensions → supabase_vault** is enabled (on by default for new
-projects), then in the SQL editor run, in order:
+Confirm **Database → Extensions → supabase_vault** is enabled, then run in the SQL editor,
+in order: `001_init.sql`, `003_grants.sql`, `004_fix_ambiguous_params.sql`,
+`005_two_account_toggle.sql`, `006_security_round.sql`. `002_test_policies.sql` is an
+optional manual checklist. Each file runs once. See `db/README.md` for what each does.
 
-1. `db/001_init.sql` — tables, RLS policies, `is_agency_member`, the Vault-backed secrets
-   RPCs. Runs in one transaction.
-2. (optional) walk through `db/002_test_policies.sql` with two test users to confirm the
-   policies do what they say — it's a checklist in comments, not a script.
-3. `db/003_grants.sql` — required. This project has "automatically expose new tables"
-   off, so RLS alone doesn't grant access; without this, every query fails with
-   permission-denied even though the policies are correct.
-4. `db/004_fix_ambiguous_params.sql` — only needed if you applied `001_init.sql` before
-   this fix landed in it (renames the secrets RPCs' parameters to `p_`-prefixed to avoid
-   an ambiguous-column error). Harmless to run on a fresh install.
-
-Each file runs once; they aren't idempotent. Details on what each grant/RPC does are in
-`db/README.md`.
+Then, in **Authentication**: set the site URL and redirect allow-list to your dashboard URL
+(**URL Configuration**), turn off new sign-ups, and invite your team from **Users**.
 
 ### 2. Worker
 
-Copy `.env.example` to `.env` and fill it in:
-
-- `WATCH_SUPABASE_URL` / `WATCH_SERVICE_ROLE_KEY` / `WATCH_DATABASE_URL` — the RLS Watch
-  project itself, service role (used to read every agency's projects and secrets, not a
-  monitored project's credentials).
-- `TELEGRAM_BOT_TOKEN` — a bot created via @BotFather. Each agency sets its own chat id
-  from the web app's Settings page.
-- `WEB_URL` — the public dashboard URL, used to build links in alert messages.
-- `CHECK_INTERVAL_MINUTES` — sweep interval, default 1440 (once a day).
-- `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` — same RLS Watch project, read by `web/`
-  at build time.
-
-Then, from the repo root:
+Copy `.env.example` to `.env` and fill in `WATCH_SUPABASE_URL`, `WATCH_SERVICE_ROLE_KEY`,
+`TELEGRAM_BOT_TOKEN` (from @BotFather), `WEB_URL` and optionally `CHECK_INTERVAL_MINUTES`.
+Copy `worker/`, `shared/`, `package.json`, `package-lock.json`, `docker-compose.yml` and that
+`.env` to your server, then:
 
 ```bash
 docker compose up -d --build
 ```
 
-This builds `worker/Dockerfile` and starts the `rls-watch-worker` service with `.env` as
-its `env_file`. It's written to join an existing Caddy/n8n compose stack on the same
-server rather than stand alone — if you're deploying next to one, copy this repo's
-`worker/`, `shared/`, `package.json`, `package-lock.json`, `.env` and `docker-compose.yml`
-to the server and bring it up there.
-
 ### 3. Web
 
+Put `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` (the RLS Watch project, publishable key)
+in the repo-root `.env`, then:
+
 ```bash
-cd web
-npm install
-npm run build
+cd web && npm install && npm run build
 ```
 
-Output goes to `web/dist` — a static site, no server-side code. Serve it with Caddy
-(adjust the domain and path):
+Serve `web/dist` as a static site. With Caddy:
 
 ```
 watch.example.com {
@@ -119,27 +162,17 @@ watch.example.com {
 }
 ```
 
-`try_files {path} /index.html` is needed because this is a client-side-routed SPA
-(`react-router-dom`) — without it, refreshing on `/projects/:id` 404s.
-
-### 4. Supabase Auth URLs
-
-In the RLS Watch Supabase project, under **Authentication → URL Configuration**, set the
-site URL to your dashboard's public URL (the same value as `WEB_URL`), and add it to the
-redirect allow-list. Magic links won't come back to the right place otherwise.
+`try_files` is needed because routing is client-side.
 
 ## Limits
 
-- No support for Supabase self-hosted projects — only supabase.com-hosted ones, since the
-  probes assume the standard REST/Vault/connection-string surface.
-- The two-account impersonation test needs you to hand-configure a sample row and two
-  existing user ids per table; it's not derived automatically.
-- `auditPolicies` needs a direct Postgres connection string. If a monitored project only
-  gives you an anon/service key with no `database_url`, you get the anon-key probes and
-  (if a service key is present) the two-account test, but not the policy audit.
-- One check interval per RLS Watch deployment, not per project — you can't run one project
-  hourly and another weekly without running two separate deployments.
-- Alerts are Telegram-only; there's no email or webhook channel.
-- Findings are diffed by fingerprint (kind + target + policy), not by human review, so a
-  cosmetic policy rewrite that doesn't change behavior can still show up as "new" and
-  "resolved" in the same run.
+- Only supabase.com-hosted projects; self-hosted Supabase doesn't fit the URL rules above.
+- The policy audit reads `public` only. The anon probe reads at most one row per table and
+  can't tell a table that's empty from one RLS hides.
+- The two-account test needs a hand-written sample row per table that satisfies its
+  constraints; tables it can't insert into are reported as not evaluated.
+- Buckets and RPCs aren't discovered; list them by hand.
+- One check interval per deployment, not per project.
+- Alerts are Telegram-only.
+- Findings are matched across runs by kind + target + policy name, so renaming a policy shows
+  up as one finding resolved and another new.
