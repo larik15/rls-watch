@@ -144,6 +144,9 @@ pre {
 .dot-gray {
   background: var(--info);
 }
+.dot-blue {
+  background: var(--accent);
+}
 
 .trend {
   font-size: 13px;
@@ -234,6 +237,10 @@ form button {
 .notice-error {
   background: rgba(255, 92, 92, 0.12);
   color: var(--critical);
+}
+.notice-warn {
+  background: rgba(232, 197, 71, 0.12);
+  color: var(--medium);
 }
 
 .auth-page {
