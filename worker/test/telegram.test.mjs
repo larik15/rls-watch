@@ -24,7 +24,18 @@ test("formatAlertMessage caps the finding list at 10 and notes the remainder", (
 
   assert.match(text, /finding 9/); // 10th shown (0-indexed)
   assert.doesNotMatch(text, /finding 10\b/);
-  assert.match(text, /and 3 more/);
+  assert.match(text, /…and 3 more, see dashboard/);
+});
+
+test("formatAlertMessage stays within 3800 chars however long the findings and name are", () => {
+  const long = "<".repeat(5000); // escapes to &lt; — 4x longer
+  const findings = Array.from({ length: 50 }, () => ({ severity: "critical", message: long }));
+  const text = formatAlertMessage({ name: long }, { critical: 50, high: 0, medium: 0, info: 0 }, findings, "https://watch.example.com", "p1");
+
+  assert.ok(text.length <= 3800, `message is ${text.length} chars`);
+  assert.match(text, /…and \d+ more, see dashboard/);
+  assert.ok(text.endsWith("https://watch.example.com/projects/p1"), "the dashboard link survives truncation");
+  assert.doesNotMatch(text, /<</, "HTML stays escaped");
 });
 
 test("sendTelegramMessage posts to the bot API and resolves on ok:true", async () => {

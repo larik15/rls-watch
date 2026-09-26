@@ -3,10 +3,15 @@
 // apply to this client, so every query here is trusted, worker-only code.
 
 import { createClient } from "@supabase/supabase-js";
+import { makeSafeFetch } from "./safeFetch.mjs";
+import { planBaseline } from "../shared/checks.mjs";
+
+const BASELINE_RUNS = 20;
 
 export function createAdminClient(url, serviceRoleKey) {
   return createClient(url, serviceRoleKey, {
     auth: { autoRefreshToken: false, persistSession: false },
+    global: { fetch: makeSafeFetch() },
   });
 }
 
@@ -14,6 +19,12 @@ export function createAdminClient(url, serviceRoleKey) {
 export async function loadEnabledProjects(admin) {
   const { data, error } = await admin.from("projects").select("*").eq("enabled", true);
   if (error) throw new Error(`loadEnabledProjects: ${error.message}`);
+  return data;
+}
+
+export async function loadProject(admin, projectId) {
+  const { data, error } = await admin.from("projects").select("*").eq("id", projectId).single();
+  if (error) throw new Error(`loadProject(${projectId}): ${error.message}`);
   return data;
 }
 
@@ -25,91 +36,89 @@ export async function getProjectSecrets(admin, projectId) {
   return { serviceRoleKey: row?.service_role_key ?? null, databaseUrl: row?.database_url ?? null };
 }
 
-/** Fingerprints from the most recent finished run of a project, or []. for a first run. */
-export async function loadPreviousFingerprints(admin, projectId) {
-  const { data: run, error: runErr } = await admin
+/** Start a run holding a lease on the project; null if another run of it is still active. */
+export async function claimProjectRun(admin, projectId, leaseSeconds) {
+  const { data, error } = await admin.rpc("claim_project_run", {
+    p_project_id: projectId,
+    p_lease_seconds: leaseSeconds,
+  });
+  if (error) throw new Error(`claimProjectRun(${projectId}): ${error.message}`);
+  return data ?? null;
+}
+
+/**
+ * Findings + final status in one transaction. false if the run had already ended
+ * (e.g. its lease expired and it was marked 'timeout') — nothing is written then.
+ */
+export async function completeRun(admin, runId, { status, error, counts, reportMd, checks, diff, findings }) {
+  const { data, error: rpcErr } = await admin.rpc("complete_run", {
+    p_run_id: runId,
+    p_status: status,
+    p_error: error ?? null,
+    p_counts: counts ?? null,
+    p_report_md: reportMd ?? null,
+    p_checks: checks ?? null,
+    p_diff: diff ?? null,
+    p_findings: (findings ?? []).map((f) => ({
+      severity: f.severity,
+      kind: f.kind,
+      target: f.table ?? f.function ?? null,
+      message: f.message,
+      fix: f.fix ?? null,
+      fingerprint: f.fingerprint,
+    })),
+  });
+  if (rpcErr) throw new Error(`completeRun(${runId}): ${rpcErr.message}`);
+  return data === true;
+}
+
+/** Baseline findings to diff a new run against: per check, from the latest ok run that evaluated it. */
+export async function loadBaselineFindings(admin, projectId) {
+  const { data: runs, error: runsErr } = await admin
     .from("runs")
-    .select("id")
+    .select("id, checks")
     .eq("project_id", projectId)
-    .not("finished_at", "is", null)
+    .eq("status", "ok")
     .order("started_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (runErr) throw new Error(`loadPreviousFingerprints(${projectId}): ${runErr.message}`);
-  if (!run) return [];
+    .limit(BASELINE_RUNS);
+  if (runsErr) throw new Error(`loadBaselineFindings(${projectId}): ${runsErr.message}`);
+
+  const plan = planBaseline(runs);
+  if (!plan.runIds.length) return [];
 
   const { data: findings, error: findErr } = await admin
     .from("findings")
-    .select("fingerprint")
-    .eq("run_id", run.id);
-  if (findErr) throw new Error(`loadPreviousFingerprints(${projectId}): ${findErr.message}`);
-  return findings.map((f) => f.fingerprint);
+    .select("run_id, fingerprint, kind, target, severity, message")
+    .in("run_id", plan.runIds);
+  if (findErr) throw new Error(`loadBaselineFindings(${projectId}): ${findErr.message}`);
+  return findings.filter(plan.includes);
 }
 
-/** Insert a run row, return its id. */
-export async function insertRun(admin, { projectId, startedAt }) {
-  const { data, error } = await admin
-    .from("runs")
-    .insert({ project_id: projectId, started_at: startedAt })
-    .select("id")
-    .single();
-  if (error) throw new Error(`insertRun(${projectId}): ${error.message}`);
-  return data.id;
+export async function insertAlert(admin, { projectId, agencyId, runId, channel, status, error, payload }) {
+  const { error: insErr } = await admin.from("alerts").insert({
+    project_id: projectId ?? null,
+    agency_id: agencyId,
+    run_id: runId ?? null,
+    channel,
+    status,
+    error: error ?? null,
+    payload: payload ?? {},
+  });
+  if (insErr) throw new Error(`insertAlert(${projectId ?? agencyId}): ${insErr.message}`);
 }
 
-/** Mark a run finished, with its outcome. */
-export async function finishRun(admin, runId, { status, error, counts, reportMd }) {
-  const { error: updErr } = await admin
-    .from("runs")
-    .update({ finished_at: new Date().toISOString(), status, error: error ?? null, counts, report_md: reportMd ?? null })
-    .eq("id", runId);
-  if (updErr) throw new Error(`finishRun(${runId}): ${updErr.message}`);
-}
-
-/** Bulk-insert findings for a run. No-op if the list is empty. */
-export async function insertFindings(admin, runId, projectId, findings) {
-  if (!findings.length) return;
-  const rows = findings.map((f) => ({
-    run_id: runId,
-    project_id: projectId,
-    severity: f.severity,
-    kind: f.kind,
-    target: f.table ?? f.function ?? null,
-    message: f.message,
-    fix: f.fix ?? null,
-    fingerprint: f.fingerprint,
-  }));
-  const { error } = await admin.from("findings").insert(rows);
-  if (error) throw new Error(`insertFindings(run ${runId}): ${error.message}`);
-}
-
-export async function insertAlert(admin, { projectId, runId, channel, payload }) {
-  const { error } = await admin
-    .from("alerts")
-    .insert({ project_id: projectId, run_id: runId, channel, payload });
-  if (error) throw new Error(`insertAlert(${projectId}): ${error.message}`);
-}
-
-export async function loadProject(admin, projectId) {
-  const { data, error } = await admin.from("projects").select("*").eq("id", projectId).single();
-  if (error) throw new Error(`loadProject(${projectId}): ${error.message}`);
+/** Agency row, for its telegram_chat_id. */
+export async function loadAgency(admin, agencyId) {
+  const { data, error } = await admin.from("agencies").select("*").eq("id", agencyId).single();
+  if (error) throw new Error(`loadAgency(${agencyId}): ${error.message}`);
   return data;
 }
 
-/** Pending `run_requests`, oldest first. */
-export async function loadPendingRunRequests(admin) {
-  const { data, error } = await admin
-    .from("run_requests")
-    .select("*")
-    .is("picked_at", null)
-    .order("created_at", { ascending: true });
-  if (error) throw new Error(`loadPendingRunRequests: ${error.message}`);
-  return data;
-}
-
-export async function markRunRequestPicked(admin, id) {
-  const { error } = await admin.from("run_requests").update({ picked_at: new Date().toISOString() }).eq("id", id);
-  if (error) throw new Error(`markRunRequestPicked(${id}): ${error.message}`);
+/** Claim the oldest open run request (new, or whose lease expired). null when there is none. */
+export async function claimRunRequest(admin, leaseSeconds) {
+  const { data, error } = await admin.rpc("claim_run_request", { p_lease_seconds: leaseSeconds });
+  if (error) throw new Error(`claimRunRequest: ${error.message}`);
+  return (Array.isArray(data) ? data[0] : data) ?? null;
 }
 
 export async function markRunRequestDone(admin, id, error) {
@@ -120,9 +129,31 @@ export async function markRunRequestDone(admin, id, error) {
   if (updErr) throw new Error(`markRunRequestDone(${id}): ${updErr.message}`);
 }
 
-/** Agency row, for its telegram_chat_id. */
-export async function loadAgency(admin, agencyId) {
-  const { data, error } = await admin.from("agencies").select("*").eq("id", agencyId).single();
-  if (error) throw new Error(`loadAgency(${agencyId}): ${error.message}`);
+export async function insertArtifact(admin, artifact) {
+  const { error } = await admin.from("two_account_artifacts").insert(artifact);
+  if (error) throw new Error(`insertArtifact: ${error.message}`);
+}
+
+export async function loadPendingArtifacts(admin, projectId) {
+  const { data, error } = await admin
+    .from("two_account_artifacts")
+    .select("*")
+    .eq("project_id", projectId)
+    .is("cleaned_at", null)
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(`loadPendingArtifacts(${projectId}): ${error.message}`);
   return data;
+}
+
+export async function markArtifactCleaned(admin, id) {
+  const { error } = await admin
+    .from("two_account_artifacts")
+    .update({ cleaned_at: new Date().toISOString(), last_error: null })
+    .eq("id", id);
+  if (error) throw new Error(`markArtifactCleaned(${id}): ${error.message}`);
+}
+
+export async function markArtifactError(admin, id, reason) {
+  const { error } = await admin.from("two_account_artifacts").update({ last_error: reason }).eq("id", id);
+  if (error) throw new Error(`markArtifactError(${id}): ${error.message}`);
 }

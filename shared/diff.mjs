@@ -1,19 +1,26 @@
-// Compare this run's finding fingerprints against the previous run's.
+// Compare this run's findings against the baseline (see planBaseline in checks.mjs).
+
+import { findingUnit } from "./checks.mjs";
 
 /**
- * @param {string[]} previousFingerprints  fingerprints from the previous run (may be empty)
- * @param {Array<{fingerprint:string}>} currentFindings  this run's findings (already fingerprinted)
- * @returns {{ new: object[], resolved: string[], unchanged: object[] }}
+ * @param {Array<{fingerprint:string, kind?:string, target?:string}>} baseline
+ * @param {Array<{fingerprint:string}>} currentFindings  this run's findings (fingerprinted)
+ * @param {Set<string>|null} [evaluated]  units this run evaluated (evaluatedUnits); null = all
+ * @returns {{ new: object[], resolved: object[], notEvaluated: object[], unchanged: object[] }}
+ *   A baseline finding that's absent now is `resolved` only if its check ran this time;
+ *   otherwise it's `notEvaluated` — we don't know.
  */
-export function diffFindings(previousFingerprints, currentFindings) {
-  const prevSet = new Set(previousFingerprints);
-  const currSet = new Set(currentFindings.map((f) => f.fingerprint));
+export function diffFindings(baseline, currentFindings, evaluated = null) {
+  const prev = new Set(baseline.map((f) => f.fingerprint));
+  const curr = new Set(currentFindings.map((f) => f.fingerprint));
 
-  const newFindings = currentFindings.filter((f) => !prevSet.has(f.fingerprint));
-  const unchanged = currentFindings.filter((f) => prevSet.has(f.fingerprint));
-  const resolved = [...prevSet].filter((fp) => !currSet.has(fp));
+  const newFindings = currentFindings.filter((f) => !prev.has(f.fingerprint));
+  const unchanged = currentFindings.filter((f) => prev.has(f.fingerprint));
+  const gone = baseline.filter((f) => !curr.has(f.fingerprint));
+  const resolved = evaluated ? gone.filter((f) => evaluated.has(findingUnit(f))) : gone;
+  const notEvaluated = evaluated ? gone.filter((f) => !evaluated.has(findingUnit(f))) : [];
 
-  return { new: newFindings, resolved, unchanged };
+  return { new: newFindings, resolved, notEvaluated, unchanged };
 }
 
 /**
