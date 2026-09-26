@@ -45,6 +45,7 @@ export function ProjectForm({ initial, onSubmit, submitLabel, pendingLabel }) {
   const [bucketsText, setBucketsText] = useState((initial?.buckets ?? []).join(", "));
   const [rpcText, setRpcText] = useState((initial?.rpc ?? []).join(", "));
   const [twoAccountRows, setTwoAccountRows] = useState(twoAccountToRows(initial?.two_account));
+  const [twoAccountEnabled, setTwoAccountEnabled] = useState(initial?.two_account_enabled ?? false);
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -97,6 +98,7 @@ export function ProjectForm({ initial, onSubmit, submitLabel, pendingLabel }) {
         buckets: splitCommaList(bucketsText),
         rpc: splitCommaList(rpcText),
         two_account,
+        two_account_enabled: twoAccountEnabled,
         serviceRoleKey: serviceRoleKey.trim(),
         databaseUrl: databaseUrl.trim(),
       });
@@ -216,6 +218,21 @@ export function ProjectForm({ initial, onSubmit, submitLabel, pendingLabel }) {
       <button type="button" className="btn-link" onClick={addRow}>
         + Add table
       </button>
+
+      <label htmlFor="twoAccountEnabled" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>
+        <input
+          id="twoAccountEnabled"
+          type="checkbox"
+          checked={twoAccountEnabled}
+          onChange={(e) => setTwoAccountEnabled(e.target.checked)}
+          style={{ width: "auto" }}
+        />
+        Run the two-account test
+      </label>
+      <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+        Off by default: this creates two temporary users and test rows in the client's
+        database, then deletes them.
+      </p>
 
       {error && <p className="notice notice-error">{error}</p>}
 
