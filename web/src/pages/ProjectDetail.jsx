@@ -134,6 +134,16 @@ export function ProjectDetail() {
           <p className="muted" style={{ margin: "4px 0 0", fontSize: 13 }}>
             {project.supabase_url} {!project.enabled && <span className="badge">disabled</span>}
           </p>
+          <p className="muted" style={{ margin: "4px 0 0", fontSize: 13 }}>
+            Tables:{" "}
+            {project.tables.length > 0 ? (
+              project.tables.join(", ")
+            ) : project.has_database_url ? (
+              <span className="badge">auto-discovered</span>
+            ) : (
+              "none configured"
+            )}
+          </p>
         </div>
         <div className="page-header-right">
           <Link to={`/projects/${id}/edit`}>Edit</Link>

@@ -10,6 +10,8 @@ import { buildReport } from "supabase-security-mcp/src/report.mjs";
 import { withFingerprints } from "../shared/fingerprint.mjs";
 import { diffFindings, shouldAlert } from "../shared/diff.mjs";
 import { formatAlertMessage, sendTelegramMessage } from "./telegram.mjs";
+import { discoverTableNames } from "./discoverTables.mjs";
+import { verifyTwoAccountCleanup, cleanupFinding } from "./verifyCleanup.mjs";
 import * as db from "./db.mjs";
 
 /**
@@ -27,20 +29,30 @@ export async function checkProject({ admin, project, telegramBotToken, webUrl, f
   try {
     const secrets = await db.getProjectSecrets(admin, project.id);
 
+    const policies = secrets.databaseUrl ? await auditPolicies(secrets.databaseUrl) : null;
+    const tablesToProbe = project.tables?.length ? project.tables : discoverTableNames(policies);
+
     const probe = await runProbes(
-      { url: project.supabase_url, key: project.anon_key, tables: project.tables, buckets: project.buckets, rpc: project.rpc },
+      { url: project.supabase_url, key: project.anon_key, tables: tablesToProbe, buckets: project.buckets, rpc: project.rpc },
       fetchImpl
     );
 
-    const policies = secrets.databaseUrl ? await auditPolicies(secrets.databaseUrl) : null;
-
     const twoAccount =
-      secrets.serviceRoleKey && project.two_account?.length
+      project.two_account_enabled && secrets.serviceRoleKey && project.two_account?.length
         ? await twoAccountTest(
             { url: project.supabase_url, anonKey: project.anon_key, serviceRoleKey: secrets.serviceRoleKey, tables: project.two_account },
             fetchImpl
           )
         : null;
+
+    if (twoAccount) {
+      const cleanup = await verifyTwoAccountCleanup(
+        { url: project.supabase_url, serviceRoleKey: secrets.serviceRoleKey, tables: project.two_account },
+        fetchImpl
+      );
+      const finding = cleanupFinding(cleanup);
+      if (finding) twoAccount.findings = [...twoAccount.findings, finding];
+    }
 
     const report = buildReport({ project: project.name, probe, policies, twoAccount });
     const findings = withFingerprints(report.findings);

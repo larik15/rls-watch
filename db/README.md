@@ -25,6 +25,9 @@ SQL migrations for the RLS Watch Supabase project itself.
    `004_fix_ambiguous_params.sql`. It drops and recreates the two RPC functions with
    `p_`-prefixed parameters (saving secrets used to fail with
    `column reference "project_id" is ambiguous`). Harmless on a fresh install.
+7. Paste and run `005_two_account_toggle.sql`. Adds `projects.two_account_enabled`
+   (default `false`) and recreates `projects_public` to expose it. Existing projects
+   keep the two-account test off until an owner ticks the checkbox in the web app.
 
 Run each file once. The migrations aren't idempotent: running `001_init.sql` a second time
 fails on `create table`.
