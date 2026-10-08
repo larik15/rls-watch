@@ -176,3 +176,7 @@ watch.example.com {
 - Alerts are Telegram-only.
 - Findings are matched across runs by kind + target + policy name, so renaming a policy shows
   up as one finding resolved and another new.
+
+## Need help?
+
+Want a human to check your Supabase project? I do fixed-price security audits with a written report and fixes, from $150. Email larik2174@gmail.com.
